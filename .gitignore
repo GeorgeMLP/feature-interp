@@ -1,0 +1,11 @@
+__pycache__/
+.DS_Store
+.vscode/
+wandb/
+data/
+cache/
+plots/
+results/
+*.egg-info
+*.pyc
+*.swp
