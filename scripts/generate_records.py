@@ -60,7 +60,7 @@ def construct_tokenized_dataset(
     # the entire dataset. (Normal splitting wasn't working for some reason.)
     dataset = Dataset.from_list(list(dataset.take(max_dataset_size * 3)))
         
-    first_sae, _, _ = SAE.from_pretrained(
+    first_sae = SAE.from_pretrained(
         release=sae_name,
         sae_id=sae_id_layer_format_string.format(layer=0),
         device='cpu',
@@ -106,7 +106,7 @@ def write_sae_activations(
     batch_size = 12
 
     for i in tqdm.tqdm(range(0, len(dataset_tokens), batch_size), desc=f'Dataset'):
-        batch = dataset_tokens[i:i+batch_size].to(model.device)
+        batch = dataset_tokens[i:i+batch_size].to(model.cfg.device)
         logits, cache = model.run_with_cache_with_saes(
             batch,
             saes=saes_list,
@@ -116,7 +116,7 @@ def write_sae_activations(
         
         for sae in saes_list:
             batch_sae_acts: Float[Tensor, 'batch seq d_sae'] = cache[
-                f'{sae.cfg.hook_name}.hook_sae_acts_post'
+                f'{sae.cfg.metadata.hook_name}.hook_sae_acts_post'
             ]
             batch_sae_acts = batch_sae_acts[:, :, :max_features]
             sae_acts[sae].append(batch_sae_acts.detach().cpu())
@@ -127,7 +127,7 @@ def write_sae_activations(
     
     for (sae, acts) in sae_acts.items():
         acts_packed = pack(acts, '* seq d_sae')[0]
-        torch.save(acts_packed, data_dir / 'sae_acts' / f'{sae.cfg.hook_name}.pt')
+        torch.save(acts_packed, data_dir / 'sae_acts' / f'{sae.cfg.metadata.hook_name}.pt')
         del acts, acts_packed
         torch.cuda.empty_cache()
         
@@ -149,9 +149,9 @@ def write_holistic_activations(
     
     cum_sae_acts: dict[SAE, Float[Tensor, 'batch d_sae']] = {}
     for sae in saes_list:
-        sae_acts = torch.load(data_dir / 'sae_acts' / f'{sae.cfg.hook_name}.pt')
+        sae_acts = torch.load(data_dir / 'sae_acts' / f'{sae.cfg.metadata.hook_name}.pt')
         # Remove the BOS token before summing activations
-        sae_acts = sae_acts.to(model.device)[:, token_start:]
+        sae_acts = sae_acts.to(model.cfg.device)[:, token_start:]
         cum_sae_acts[sae] = reduce(sae_acts, 'batch seq d_sae -> batch d_sae', 'mean')
     
     max_features = cum_sae_acts[saes_list[0]].shape[-1]
@@ -163,7 +163,7 @@ def write_holistic_activations(
     }
 
     for i in tqdm.tqdm(range(0, len(dataset_tokens), batch_size), desc=f'Dataset'):
-        batch = dataset_tokens[i:i+batch_size].to(model.device)
+        batch = dataset_tokens[i:i+batch_size].to(model.cfg.device)
         
         batch_drop_token_act_diffs: dict[SAE, list[Float[Tensor, 'batch d_sae']]] = {
             # Holistic activations for the BOS token are zero
@@ -190,7 +190,7 @@ def write_holistic_activations(
             
             for sae in saes_list:
                 drop_sae_acts: Float[Tensor, 'batch seq d_sae'] = cache[
-                    f'{sae.cfg.hook_name}.hook_sae_acts_post'
+                    f'{sae.cfg.metadata.hook_name}.hook_sae_acts_post'
                 ]
                 drop_cum_sae_acts = reduce(
                     drop_sae_acts[:, token_start:, :max_features],
@@ -216,7 +216,7 @@ def write_holistic_activations(
     
     for (sae, holistic_acts) in all_holistic_acts.items():
         acts_packed = pack(holistic_acts, '* seq d_sae')[0].half()
-        torch.save(acts_packed, data_dir / 'holistic_acts' / f'{sae.cfg.hook_name}.pt')
+        torch.save(acts_packed, data_dir / 'holistic_acts' / f'{sae.cfg.metadata.hook_name}.pt')
         del holistic_acts, acts_packed
         torch.cuda.empty_cache()
     
@@ -247,7 +247,7 @@ def write_expression_records(
 ) -> None:
     """Generate and write feature expression records."""
     
-    device = model.device
+    device = model.cfg.device
     embedding_save_path = data_dir / 'similarity_retriever'
     
     tokens: Int[Tensor, 'batch seq'] = torch.load(
@@ -535,7 +535,7 @@ def main(
             device=DEVICE,
             dtype=torch.bfloat16,
         )
-        model.device = DEVICE
+        model.cfg.device = DEVICE
         model.name_or_path = model_name
         
         print('Loading dataset')
@@ -570,7 +570,7 @@ def main(
         print('Loading SAEs...')
         saes_list: list[SAE] = []
         for layer in tqdm.tqdm(layers_list):
-            sae_config, _, _ = SAE.from_pretrained(
+            sae_config = SAE.from_pretrained(
                 release=sae_name,
                 sae_id=sae_id_layer_format_string.format(layer=layer),
                 device=DEVICE,
@@ -581,12 +581,12 @@ def main(
         print('Loading SAE configs...')
         sae_configs: list[tuple[str, int]] = []
         for layer in tqdm.tqdm(layers_list):
-            sae_config, _, _ = SAE.from_pretrained(
+            sae_config = SAE.from_pretrained(
                 release=sae_name,
                 sae_id=sae_id_layer_format_string.format(layer=layer),
                 device=DEVICE,
             )
-            sae_configs.append((sae_config.cfg.hook_name, sae_config.cfg.hook_layer))
+            sae_configs.append((sae_config.cfg.metadata.hook_name, sae_config.cfg.metadata.hook_layer))
             del sae_config
     
     if write_sae_acts:
